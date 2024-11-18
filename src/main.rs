@@ -16,25 +16,25 @@ struct Args {
 enum Commands {
     /// Output information about a file (file descriptor data).
     Stat {
-        /// hard link name
-        name: String,
+        /// hard link pathname
+        pathname: String,
     },
     /// Output a list of hard links to files with file descriptor numbers in a directory
     #[clap(name = "ls")]
     List {
-        /// hard link name
+        /// hard link pathname
         #[clap(default_value = "/")]
-        name: String,
+        pathname: String,
     },
-    /// Create a regular file and create a hard link named name to it in the directory
+    /// Create a regular file and create a hard link with pathname to it in the directory
     Create {
-        /// hard link name
-        name: String,
+        /// hard link pathname
+        pathname: String,
     },
-    /// Open a regular file pointed to by the hard link named name
+    /// Open a regular file pointed to by the hard link with pathname
     Open {
-        /// hard link name
-        name: String,
+        /// hard link pathname
+        pathname: String,
     },
     /// Close previously opened file with numeric file descriptor
     Close {
@@ -62,22 +62,22 @@ enum Commands {
         /// data to write
         data: String,
     },
-    /// Create a hard link named name2 to the file pointed to by the hard link named name1
+    /// Create a hard link with pathname2 to the file pointed to by the hard link with pathname1
     Link {
-        /// hard link name1
-        name1: String,
-        /// hard link name2
-        name2: String,
+        /// hard link pathname1
+        pathname1: String,
+        /// hard link pathname2
+        pathname2: String,
     },
-    /// Remove the hard link named name
+    /// Remove the hard link with pathname
     Unlink {
-        /// hard link name
-        name: String,
+        /// hard link pathname
+        pathname: String,
     },
-    /// Change the size of the file pointed to by the hard link named name
+    /// Change the size of the file pointed to by the hard link with pathname
     Truncate {
-        /// hard link name
-        name: String,
+        /// hard link pathname
+        pathname: String,
         /// size
         size: usize,
     },
@@ -111,36 +111,39 @@ fn main() {
                         Commands::Exit => {
                             break;
                         }
-                        Commands::Stat { name } => {
-                            match vfs.stat(&name) {
+                        Commands::Stat { pathname } => {
+                            match vfs.stat(&pathname) {
                                 Ok(statx) => println!("{}", statx),
                                 Err(err) => eprintln!("{}", err),
                             };
                         }
-                        Commands::List { name } => match vfs.ls(&name) {
-                            Ok(names) => {
-                                for name in names {
-                                    println!("{}", name);
+                        Commands::List { pathname } => match vfs.ls(&pathname) {
+                            Ok(entries) => {
+                                for entry in entries {
+                                    println!("{}", entry);
                                 }
                             }
                             Err(err) => eprintln!("{}", err),
                         },
-                        Commands::Create { name } => {
-                            if let Err(err) = vfs.create(&name) {
+                        Commands::Create { pathname } => {
+                            if let Err(err) = vfs.create(&pathname) {
                                 eprintln!("{}", err);
                             }
                         }
-                        Commands::Link { name1, name2 } => {
-                            if let Err(err) = vfs.link(&name1, &name2) {
+                        Commands::Link {
+                            pathname1,
+                            pathname2,
+                        } => {
+                            if let Err(err) = vfs.link(&pathname1, &pathname2) {
                                 eprintln!("{}", err);
                             }
                         }
-                        Commands::Unlink { name } => {
-                            if let Err(err) = vfs.unlink(&name) {
+                        Commands::Unlink { pathname } => {
+                            if let Err(err) = vfs.unlink(&pathname) {
                                 eprintln!("{}", err);
                             }
                         }
-                        Commands::Open { name } => match vfs.open(&name) {
+                        Commands::Open { pathname } => match vfs.open(&pathname) {
                             Ok(fd) => println!("{}", fd),
                             Err(err) => eprintln!("{}", err),
                         },
@@ -162,8 +165,8 @@ fn main() {
                             Ok(data) => println!("{}", String::from_utf8_lossy(&data)),
                             Err(err) => eprintln!("{}", err),
                         },
-                        Commands::Truncate { name, size } => {
-                            if let Err(err) = vfs.truncate(&name, size) {
+                        Commands::Truncate { pathname, size } => {
+                            if let Err(err) = vfs.truncate(&pathname, size) {
                                 eprintln!("{}", err);
                             }
                         }

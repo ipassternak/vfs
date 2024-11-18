@@ -1,7 +1,14 @@
-use std::{cmp, collections::{BTreeSet, HashMap}, fmt};
+use std::{
+    cmp,
+    collections::{BTreeSet, HashMap},
+    fmt,
+};
 
 const BLOCK_SIZE: usize = 512;
 const INITIAL_BLOCKS_COUNT: usize = 1024;
+const PATHNAME_SEPARATOR: char = '/';
+const DOT: &str = ".";
+const DOTDOT: &str = "..";
 
 #[derive(Debug)]
 struct Identity {
@@ -11,24 +18,24 @@ struct Identity {
 
 impl Identity {
     /// Create a new `Identity` instance.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `preallocate` - The initial number of integers to allocate.
     /// * `min` - The minimum integer to allocate.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * A new `Identity` instance.
-    /// 
+    ///
     /// # Examples
-    /// 
+    ///
     /// ```
     /// use vfs::Identity;
-    /// 
+    ///
     /// let preallocate = 10;
     /// let min = 1;
-    /// 
+    ///
     /// let id = Identity::new(preallocate, min);
     /// ```
     fn new(preallocate: usize, min: usize) -> Self {
@@ -148,9 +155,12 @@ impl FileDescriptor {
         }
     }
 
-    fn new_dir() -> Self {
+    fn new_dir(id: usize, parent_id: usize) -> Self {
+        let mut entries = HashMap::new();
+        entries.insert(DOT.to_string(), id);
+        entries.insert(DOTDOT.to_string(), parent_id);
         Self {
-            file_type: FileType::Directory(HashMap::new()),
+            file_type: FileType::Directory(entries),
             size: 0,
             links: 1,
             refs: 0,
@@ -181,17 +191,45 @@ pub struct Vfs {
     blocks_id: Identity,
     fds_id: Identity,
     open_fds_id: Identity,
+    cwd_id: usize,
+    cwd: String,
 }
 
 impl Vfs {
     pub fn new() -> Self {
         Self {
             blocks: vec![0; BLOCK_SIZE * INITIAL_BLOCKS_COUNT],
-            fds: vec![FileDescriptor::new_dir()],
+            fds: vec![FileDescriptor::new_dir(0, 0)],
             open_fds: HashMap::new(),
             blocks_id: Identity::new(INITIAL_BLOCKS_COUNT - 1, 1),
             fds_id: Identity::new(0, 1),
             open_fds_id: Identity::new(0, 0),
+            cwd_id: 0,
+            cwd: PATHNAME_SEPARATOR.to_string(),
+        }
+    }
+
+    pub fn cwd(&self) -> &str {
+        &self.cwd
+    }
+
+    pub fn is_absolute_path(pathname: &str) -> bool {
+        pathname.starts_with(PATHNAME_SEPARATOR)
+    }
+
+    pub fn dirname(pathname: &str) -> String {
+        let sep_idx = pathname.rfind(PATHNAME_SEPARATOR);
+        match sep_idx {
+            Some(idx) => pathname[..idx].to_string(),
+            None => pathname.to_string(),
+        }
+    }
+
+    pub fn basename(pathname: &str) -> String {
+        let sep_idx = pathname.rfind(PATHNAME_SEPARATOR);
+        match sep_idx {
+            Some(idx) => pathname[idx + 1..].to_string(),
+            None => pathname.to_string(),
         }
     }
 
@@ -199,51 +237,80 @@ impl Vfs {
         &self.fds[0]
     }
 
-    fn resolve(&self, name: &str) -> Option<(&FileDescriptor, usize, usize)> {
-        let root = self.root();
-        if name == "/" {
-            return Some((root, 0, 0));
+    fn resolve(&self, pathname: &str) -> Option<(&FileDescriptor, usize, usize)> {
+        let pathname = pathname.trim();
+        let mut fd = self.root();
+        let mut id: usize = 0;
+        if !Vfs::is_absolute_path(pathname) {
+            match &self.fds.get(self.cwd_id) {
+                Some(cur) => {
+                    fd = cur;
+                    id = self.cwd_id;
+                }
+                None => return None,
+            }
         }
-        let entries = self.root().file_type.as_dir();
+        let mut segments: Vec<_> = pathname
+            .split(PATHNAME_SEPARATOR)
+            .filter(|seg| seg.len() > 0)
+            .collect();
+        let name = segments.pop().unwrap_or(DOT);
+        for seg in segments {
+            match &fd.file_type {
+                FileType::Directory(entries) => {
+                    match entries.get(seg).and_then(|&next_id| {
+                        id = next_id;
+                        self.fds.get(id)
+                    }) {
+                        Some(next_fd) => {
+                            fd = next_fd;
+                        }
+                        None => return None,
+                    }
+                }
+                FileType::Regular(_) => return None,
+            }
+        }
+        let entries = fd.file_type.as_dir();
         entries
             .get(name)
-            .and_then(|&id| Some((&self.fds[id], id, 0)))
+            .and_then(|&next_id| self.fds.get(next_id).map(|fd| (fd, next_id, id)))
     }
 
-    pub fn stat(&self, name: &str) -> Result<Statx, String> {
-        match self.resolve(name) {
-            Some((fd, _, _)) => Ok(fd.stat(name)),
+    pub fn stat(&self, pathname: &str) -> Result<Statx, String> {
+        match self.resolve(pathname) {
+            Some((fd, _, _)) => Ok(fd.stat(pathname)),
             None => Err(format!(
                 "stat: cannot statx '{}': No such file or directory",
-                name
+                pathname
             )),
         }
     }
 
-    pub fn ls(&self, name: &str) -> Result<Vec<String>, String> {
-        match self.resolve(name) {
+    pub fn ls(&self, pathname: &str) -> Result<Vec<String>, String> {
+        match self.resolve(pathname) {
             Some((fd, _, _)) => match &fd.file_type {
                 FileType::Directory(entries) => {
                     let mut names: Vec<_> = entries.keys().cloned().collect();
                     names.sort_unstable();
                     Ok(names)
                 }
-                FileType::Regular(_) => Ok(vec![name.to_string()]),
+                FileType::Regular(_) => Ok(vec![pathname.to_string()]),
             },
             None => Err(format!(
                 "ls: cannot access '{}': No such file or directory",
-                name
+                pathname
             )),
         }
     }
 
-    fn alloc_fd(&mut self, is_file: bool) -> usize {
+    fn alloc_fd(&mut self, is_file: bool, parent_id: usize) -> usize {
+        let (id, incremented) = self.fds_id.next();
         let fd = if is_file {
             FileDescriptor::new_file()
         } else {
-            FileDescriptor::new_dir()
+            FileDescriptor::new_dir(id, parent_id)
         };
-        let (id, incremented) = self.fds_id.next();
         if incremented {
             self.fds.push(fd);
         } else {
@@ -252,70 +319,83 @@ impl Vfs {
         id
     }
 
-    pub fn create(&mut self, name: &str) -> Result<(), String> {
-        let name = name.trim();
-        if name.is_empty() {
+    pub fn create(&mut self, pathname: &str) -> Result<(), String> {
+        let basename = Vfs::basename(pathname);
+        if basename.is_empty() {
             return Err("create: a non-empty name is required".into());
         }
-        match self.resolve("/") {
+        let dirname = if pathname.contains(PATHNAME_SEPARATOR) {
+            &Vfs::dirname(pathname)
+        } else {
+            self.cwd()
+        };
+        match self.resolve(&dirname) {
             Some((fd, id, _)) => {
                 if fd.file_type.is_file() {
-                    return Err(format!("create: cannot create '{}': Not a directory", name));
+                    return Err(format!(
+                        "create: cannot create '{}': Not a directory",
+                        dirname
+                    ));
                 }
                 let entries = fd.file_type.as_dir();
-                if entries.contains_key(name) {
+                if entries.contains_key(&basename) {
                     return Ok(());
                 }
-                let new_id = self.alloc_fd(true);
+                let new_id = self.alloc_fd(true, id);
                 let fd = &mut self.fds[id];
                 let entries = fd.file_type.as_dir_mut();
-                entries.insert(name.to_string(), new_id);
+                entries.insert(basename.to_string(), new_id);
                 Ok(())
             }
             None => Err(format!(
                 "create: cannot create '{}': No such file or directory",
-                name
+                pathname
             )),
         }
     }
 
-    pub fn link(&mut self, name1: &str, name2: &str) -> Result<(), String> {
-        let name2 = name2.trim();
-        if name2.is_empty() {
+    pub fn link(&mut self, pn1: &str, pn2: &str) -> Result<(), String> {
+        let basename = Vfs::basename(pn2);
+        if basename.is_empty() {
             return Err(format!("link: a non-empty name is required"));
         }
-        let r1 = self.resolve(name1);
-        let r2 = self.resolve("/");
+        let dirname = if pn2.contains(PATHNAME_SEPARATOR) {
+            &Vfs::dirname(pn2)
+        } else {
+            self.cwd()
+        };
+        let r1 = self.resolve(pn1);
+        let r2 = self.resolve(dirname);
         match (r1, r2) {
             (Some((fd1, id1, _)), Some((fd2, id2, _))) => {
                 if fd1.file_type.is_dir() {
                     return Err(format!(
                         "link: cannot create link '{}' to '{}': Operation not permitted",
-                        name2, name1
+                        pn2, pn1
                     ));
                 }
                 if fd2.file_type.is_file() {
                     return Err(format!(
                         "link: cannot link '{}' to '{}': Not a directory",
-                        name2, name1
+                        pn2, pn1
                     ));
                 }
                 let fd2 = &mut self.fds[id2];
                 let entries = fd2.file_type.as_dir_mut();
-                if entries.contains_key(name2) {
+                if entries.contains_key(&basename) {
                     return Err(format!(
                         "link: cannot link '{}' to '{}': File exists",
-                        name2, name1
+                        pn2, pn1
                     ));
                 }
-                entries.insert(name2.to_string(), id1);
+                entries.insert(basename.to_string(), id1);
                 let fd1 = &mut self.fds[id1];
                 fd1.links += 1;
                 Ok(())
             }
             _ => Err(format!(
                 "link: cannot link '{}' to '{}': No such file or directory",
-                name2, name1,
+                pn2, pn1,
             )),
         }
     }
@@ -332,7 +412,16 @@ impl Vfs {
                 }
             }
             FileType::Directory(entries) => {
-                let ids: Vec<_> = entries.values().cloned().collect();
+                let ids: Vec<_> = entries
+                    .iter()
+                    .filter_map(|(name, id)| {
+                        if name == &DOT || name == &DOTDOT {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 for id in ids {
                     self.free_fd(id);
                 }
@@ -341,15 +430,19 @@ impl Vfs {
         self.fds_id.free(id);
     }
 
-    pub fn unlink(&mut self, name: &str) -> Result<(), String> {
-        match self.resolve(name) {
+    pub fn unlink(&mut self, pathname: &str) -> Result<(), String> {
+        match self.resolve(pathname) {
             Some((fd, id, dir_id)) => {
                 if fd.file_type.is_dir() {
-                    return Err(format!("unlink: cannot unlink '{}': Is a directory", name));
+                    return Err(format!(
+                        "unlink: cannot unlink '{}': Is a directory",
+                        pathname
+                    ));
                 }
                 let dir = &mut self.fds[dir_id];
                 let entries = dir.file_type.as_dir_mut();
-                entries.remove(name);
+                let name = Vfs::basename(pathname);
+                entries.remove(&name);
                 let fd = &mut self.fds[id];
                 fd.links -= 1;
                 self.free_fd(id);
@@ -357,16 +450,16 @@ impl Vfs {
             }
             _ => Err(format!(
                 "unlink: cannot unlink '{}': No such file or directory",
-                name
+                pathname
             )),
         }
     }
 
-    pub fn open(&mut self, name: &str) -> Result<usize, String> {
-        match self.resolve(name) {
+    pub fn open(&mut self, pathname: &str) -> Result<usize, String> {
+        match self.resolve(pathname) {
             Some((fd, id, _)) => {
                 if fd.file_type.is_dir() {
-                    return Err(format!("open: cannot open '{}': Is a directory", name));
+                    return Err(format!("open: cannot open '{}': Is a directory", pathname));
                 }
                 let fd = &mut self.fds[id];
                 fd.refs += 1;
@@ -376,7 +469,7 @@ impl Vfs {
             }
             None => Err(format!(
                 "open: cannot open '{}': No such file or directory",
-                name
+                pathname
             )),
         }
     }
@@ -475,13 +568,13 @@ impl Vfs {
         }
     }
 
-    pub fn truncate(&mut self, name: &str, size: usize) -> Result<(), String> {
-        match self.resolve(name) {
+    pub fn truncate(&mut self, pathname: &str, size: usize) -> Result<(), String> {
+        match self.resolve(pathname) {
             Some((fd, id, _)) => {
                 if fd.file_type.is_dir() {
                     return Err(format!(
                         "truncate: cannot truncate '{}': Is a directory",
-                        name
+                        pathname
                     ));
                 }
                 let fd = &mut self.fds[id];
@@ -520,7 +613,7 @@ impl Vfs {
             }
             None => Err(format!(
                 "truncate: cannot truncate '{}': No such file or directory",
-                name
+                pathname
             )),
         }
     }
