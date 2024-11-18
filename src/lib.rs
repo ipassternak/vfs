@@ -6,9 +6,9 @@ use std::{
 
 const BLOCK_SIZE: usize = 512;
 const INITIAL_BLOCKS_COUNT: usize = 1024;
-const PATHNAME_SEPARATOR: char = '/';
 const DOT: &str = ".";
 const DOTDOT: &str = "..";
+const PATHNAME_SEPARATOR: &str = "/";
 
 #[derive(Debug)]
 struct Identity {
@@ -155,12 +155,9 @@ impl FileDescriptor {
         }
     }
 
-    fn new_dir(id: usize, parent_id: usize) -> Self {
-        let mut entries = HashMap::new();
-        entries.insert(DOT.to_string(), id);
-        entries.insert(DOTDOT.to_string(), parent_id);
+    fn new_dir() -> Self {
         Self {
-            file_type: FileType::Directory(entries),
+            file_type: FileType::Directory(HashMap::new()),
             size: 0,
             links: 1,
             refs: 0,
@@ -199,7 +196,7 @@ impl Vfs {
     pub fn new() -> Self {
         Self {
             blocks: vec![0; BLOCK_SIZE * INITIAL_BLOCKS_COUNT],
-            fds: vec![FileDescriptor::new_dir(0, 0)],
+            fds: vec![FileDescriptor::new_dir()],
             open_fds: HashMap::new(),
             blocks_id: Identity::new(INITIAL_BLOCKS_COUNT - 1, 1),
             fds_id: Identity::new(0, 1),
@@ -241,6 +238,7 @@ impl Vfs {
     }
 
     pub fn join(prefix: &str, pathname: &str) -> String {
+        let pathname = pathname.trim();
         let mut segments: Vec<_> = if Vfs::is_absolute(pathname) {
             Vec::new()
         } else {
@@ -261,12 +259,13 @@ impl Vfs {
                 _ => segments.push(seg),
             }
         }
-        let path = String::from(PATHNAME_SEPARATOR);
-        if segments.is_empty() {
+        let path = PATHNAME_SEPARATOR.to_string();
+        let res = if segments.is_empty() {
             path
         } else {
-            path + &segments.join(&PATHNAME_SEPARATOR.to_string())
-        }
+            path + &segments.join(PATHNAME_SEPARATOR)
+        };
+        res
     }
 
     fn root(&self) -> &FileDescriptor {
@@ -274,14 +273,17 @@ impl Vfs {
     }
 
     fn resolve(&self, pathname: &str) -> Option<(&FileDescriptor, usize, usize)> {
-        let pathname = Vfs::join(&self.cwd, pathname.trim());
+        let pathname = Vfs::join(&self.cwd, pathname);
         let mut segments: Vec<_> = pathname
             .split(PATHNAME_SEPARATOR)
             .filter(|seg| seg.len() > 0)
             .collect();
-        let name = segments.pop().unwrap_or(DOT);
         let mut id = 0;
         let mut fd = self.root();
+        let name = match segments.pop() {
+            Some(name) => name,
+            None => return Some((fd, id, id)),
+        };
         for seg in segments {
             match &fd.file_type {
                 FileType::Directory(entries) => {
@@ -319,15 +321,12 @@ impl Vfs {
     }
 
     pub fn mkdir(&mut self, pathname: &str) -> Result<(), String> {
-        let basename = Vfs::basename(pathname);
+        let pathname = Vfs::join(&self.cwd, pathname);
+        let basename = Vfs::basename(&pathname);
+        let dirname = Vfs::dirname(&pathname);
         if basename.is_empty() {
-            return Err("create: a non-empty name is required".into());
+            return Err("create: cannot create: empty name not allowed".into());
         }
-        let dirname = if pathname.contains(PATHNAME_SEPARATOR) {
-            &Vfs::dirname(pathname)
-        } else {
-            self.cwd()
-        };
         match self.resolve(&dirname) {
             Some((fd, id, _)) => {
                 if fd.file_type.is_file() {
@@ -340,7 +339,7 @@ impl Vfs {
                 if entries.contains_key(&basename) {
                     return Err(format!("mkdir: cannot create '{}': File exists", pathname));
                 }
-                let new_id = self.alloc_fd(false, id);
+                let new_id = self.alloc_fd(false);
                 let fd = &mut self.fds[id];
                 let entries = fd.file_type.as_dir_mut();
                 entries.insert(basename.to_string(), new_id);
@@ -369,23 +368,21 @@ impl Vfs {
                     ));
                 }
                 let entries = fd.file_type.as_dir();
-                // Directories must contain only "." and ".."
-                if entries.len() != 2 {
+                if !entries.is_empty() {
                     return Err(format!(
                         "rmdir: failed to remove '{}': Directory not empty",
                         pathname
                     ));
                 }
+                let dir = &mut self.fds[dir_id];
+                let entries = dir.file_type.as_dir_mut();
+                let name = Vfs::basename(&Vfs::join(&self.cwd, pathname));
+                entries.remove(&name);
+                self.free_fd(id);
                 if id == self.cwd_id {
                     self.cwd_id = 0;
                     self.cwd = PATHNAME_SEPARATOR.to_string();
                 }
-                println!("{id}, {dir_id}");
-                let dir = &mut self.fds[dir_id];
-                let entries = dir.file_type.as_dir_mut();
-                let name = Vfs::basename(pathname);
-                entries.remove(&name);
-                self.free_fd(id);
                 Ok(())
             }
             _ => Err(format!(
@@ -407,14 +404,9 @@ impl Vfs {
 
     pub fn ls(&self, pathname: &str) -> Result<Vec<String>, String> {
         match self.resolve(pathname) {
-            Some((fd, a, b)) => match &fd.file_type {
+            Some((fd, _, _)) => match &fd.file_type {
                 FileType::Directory(entries) => {
-                    println!("{}, {}", a, b);
-                    let mut names: Vec<_> = entries
-                        .keys()
-                        .cloned()
-                        // .filter(|name| name != DOT && name != DOTDOT)
-                        .collect();
+                    let mut names: Vec<_> = entries.keys().cloned().collect();
                     names.sort_unstable();
                     Ok(names)
                 }
@@ -427,12 +419,12 @@ impl Vfs {
         }
     }
 
-    fn alloc_fd(&mut self, is_file: bool, parent_id: usize) -> usize {
+    fn alloc_fd(&mut self, is_file: bool) -> usize {
         let (id, incremented) = self.fds_id.next();
         let fd = if is_file {
             FileDescriptor::new_file()
         } else {
-            FileDescriptor::new_dir(id, parent_id)
+            FileDescriptor::new_dir()
         };
         if incremented {
             self.fds.push(fd);
@@ -443,15 +435,12 @@ impl Vfs {
     }
 
     pub fn create(&mut self, pathname: &str) -> Result<(), String> {
-        let basename = Vfs::basename(pathname);
+        let pathname = Vfs::join(&self.cwd, pathname);
+        let basename = Vfs::basename(&pathname);
+        let dirname = Vfs::dirname(&pathname);
         if basename.is_empty() {
-            return Err("create: a non-empty name is required".into());
+            return Err("create: cannot create: empty name not allowed".into());
         }
-        let dirname = if pathname.contains(PATHNAME_SEPARATOR) {
-            &Vfs::dirname(pathname)
-        } else {
-            self.cwd()
-        };
         match self.resolve(&dirname) {
             Some((fd, id, _)) => {
                 if fd.file_type.is_file() {
@@ -464,7 +453,7 @@ impl Vfs {
                 if entries.contains_key(&basename) {
                     return Ok(());
                 }
-                let new_id = self.alloc_fd(true, id);
+                let new_id = self.alloc_fd(true);
                 let fd = &mut self.fds[id];
                 let entries = fd.file_type.as_dir_mut();
                 entries.insert(basename.to_string(), new_id);
@@ -478,17 +467,14 @@ impl Vfs {
     }
 
     pub fn link(&mut self, pn1: &str, pn2: &str) -> Result<(), String> {
-        let basename = Vfs::basename(pn2);
+        let pathname = Vfs::join(&self.cwd, pn2);
+        let basename = Vfs::basename(&pathname);
+        let dirname = Vfs::dirname(&pathname);
         if basename.is_empty() {
-            return Err(format!("link: a non-empty name is required"));
+            return Err("create: cannot create: empty name not allowed".into());
         }
-        let dirname = if pn2.contains(PATHNAME_SEPARATOR) {
-            &Vfs::dirname(pn2)
-        } else {
-            self.cwd()
-        };
         let r1 = self.resolve(pn1);
-        let r2 = self.resolve(dirname);
+        let r2 = self.resolve(&dirname);
         match (r1, r2) {
             (Some((fd1, id1, _)), Some((fd2, id2, _))) => {
                 if fd1.file_type.is_dir() {
