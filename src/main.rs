@@ -92,6 +92,11 @@ enum Commands {
         /// hard link pathname
         pathname: String,
     },
+    /// Remove the hardlink of empty directory
+    Rmdir {
+        /// hard link pathname
+        pathname: String,
+    },
     /// Exit the program
     Exit,
 }
@@ -188,6 +193,11 @@ fn main() {
                         }
                         Commands::Mkdir { pathname } => {
                             if let Err(err) = vfs.mkdir(&pathname) {
+                                eprintln!("{}", err);
+                            }
+                        }
+                        Commands::Rmdir { pathname } => {
+                            if let Err(err) = vfs.rmdir(&pathname) {
                                 eprintln!("{}", err);
                             }
                         }

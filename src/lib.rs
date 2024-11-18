@@ -226,8 +226,8 @@ impl Vfs {
                     PATHNAME_SEPARATOR.to_string()
                 } else {
                     dirname
-                }
-            },
+                };
+            }
             None => pathname.to_string(),
         }
     }
@@ -274,23 +274,14 @@ impl Vfs {
     }
 
     fn resolve(&self, pathname: &str) -> Option<(&FileDescriptor, usize, usize)> {
-        let pathname = pathname.trim();
-        let mut fd = self.root();
-        let mut id: usize = 0;
-        if !Vfs::is_absolute(pathname) {
-            match &self.fds.get(self.cwd_id) {
-                Some(cur) => {
-                    fd = cur;
-                    id = self.cwd_id;
-                }
-                None => return None,
-            }
-        }
+        let pathname = Vfs::join(&self.cwd, pathname.trim());
         let mut segments: Vec<_> = pathname
             .split(PATHNAME_SEPARATOR)
             .filter(|seg| seg.len() > 0)
             .collect();
         let name = segments.pop().unwrap_or(DOT);
+        let mut id = 0;
+        let mut fd = self.root();
         for seg in segments {
             match &fd.file_type {
                 FileType::Directory(entries) => {
@@ -362,6 +353,48 @@ impl Vfs {
         }
     }
 
+    pub fn rmdir(&mut self, pathname: &str) -> Result<(), String> {
+        match self.resolve(pathname) {
+            Some((fd, id, dir_id)) => {
+                if id == 0 {
+                    return Err(format!(
+                        "rmdir: cannot remove '{}': Is a root directory",
+                        pathname
+                    ));
+                }
+                if fd.file_type.is_file() {
+                    return Err(format!(
+                        "rmdir: failed to remove '{}': Not a directory",
+                        pathname
+                    ));
+                }
+                let entries = fd.file_type.as_dir();
+                // Directories must contain only "." and ".."
+                if entries.len() != 2 {
+                    return Err(format!(
+                        "rmdir: failed to remove '{}': Directory not empty",
+                        pathname
+                    ));
+                }
+                if id == self.cwd_id {
+                    self.cwd_id = 0;
+                    self.cwd = PATHNAME_SEPARATOR.to_string();
+                }
+                println!("{id}, {dir_id}");
+                let dir = &mut self.fds[dir_id];
+                let entries = dir.file_type.as_dir_mut();
+                let name = Vfs::basename(pathname);
+                entries.remove(&name);
+                self.free_fd(id);
+                Ok(())
+            }
+            _ => Err(format!(
+                "rmdir: cannot rmdir '{}': No such file or directory",
+                pathname
+            )),
+        }
+    }
+
     pub fn stat(&self, pathname: &str) -> Result<Statx, String> {
         match self.resolve(pathname) {
             Some((fd, _, _)) => Ok(fd.stat(pathname)),
@@ -374,12 +407,13 @@ impl Vfs {
 
     pub fn ls(&self, pathname: &str) -> Result<Vec<String>, String> {
         match self.resolve(pathname) {
-            Some((fd, _, _)) => match &fd.file_type {
+            Some((fd, a, b)) => match &fd.file_type {
                 FileType::Directory(entries) => {
+                    println!("{}, {}", a, b);
                     let mut names: Vec<_> = entries
                         .keys()
                         .cloned()
-                        .filter(|name| name != DOT && name != DOTDOT)
+                        // .filter(|name| name != DOT && name != DOTDOT)
                         .collect();
                     names.sort_unstable();
                     Ok(names)
@@ -500,21 +534,7 @@ impl Vfs {
                     self.blocks_id.free(*id);
                 }
             }
-            FileType::Directory(entries) => {
-                let ids: Vec<_> = entries
-                    .iter()
-                    .filter_map(|(name, id)| {
-                        if name == &DOT || name == &DOTDOT {
-                            Some(*id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                for id in ids {
-                    self.free_fd(id);
-                }
-            }
+            FileType::Directory(_) => {}
         }
         self.fds_id.free(id);
     }
