@@ -1,26 +1,46 @@
-use std::{cmp, collections::HashMap, fmt};
+use std::{cmp, collections::{BTreeSet, HashMap}, fmt};
 
 const BLOCK_SIZE: usize = 512;
 const INITIAL_BLOCKS_COUNT: usize = 1024;
 
 #[derive(Debug)]
 struct Identity {
-    free: Vec<usize>,
+    free: BTreeSet<usize>,
     next: usize,
-    min: usize,
 }
 
 impl Identity {
-    fn new(initial: usize, min: usize) -> Self {
+    /// Create a new `Identity` instance.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `preallocate` - The initial number of integers to allocate.
+    /// * `min` - The minimum integer to allocate.
+    /// 
+    /// # Returns
+    /// 
+    /// * A new `Identity` instance.
+    /// 
+    /// # Examples
+    /// 
+    /// ```
+    /// use vfs::Identity;
+    /// 
+    /// let preallocate = 10;
+    /// let min = 1;
+    /// 
+    /// let id = Identity::new(preallocate, min);
+    /// ```
+    fn new(preallocate: usize, min: usize) -> Self {
+        let next = min + preallocate;
         Self {
-            free: Vec::from_iter(min..initial),
-            next: initial,
-            min,
+            free: BTreeSet::from_iter(min..next),
+            next,
         }
     }
 
     fn next(&mut self) -> (usize, bool) {
-        if let Some(id) = self.free.pop() {
+        if let Some(id) = self.free.pop_first() {
             (id, false)
         } else {
             let id = self.next;
@@ -30,9 +50,7 @@ impl Identity {
     }
 
     fn free(&mut self, id: usize) {
-        if id >= self.min {
-            self.free.push(id);
-        }
+        self.free.insert(id);
     }
 }
 
@@ -141,7 +159,7 @@ impl FileDescriptor {
 
     fn stat(&self, name: &str) -> Statx {
         let blocks = match &self.file_type {
-            FileType::Regular(blocks_refs) => blocks_refs.len(),
+            FileType::Regular(blocks_refs) => blocks_refs.iter().filter(|&&id| id != 0).count(),
             FileType::Directory(_) => 0,
         };
         Statx {
@@ -171,8 +189,8 @@ impl Vfs {
             blocks: vec![0; BLOCK_SIZE * INITIAL_BLOCKS_COUNT],
             fds: vec![FileDescriptor::new_dir()],
             open_fds: HashMap::new(),
-            blocks_id: Identity::new(INITIAL_BLOCKS_COUNT, 1),
-            fds_id: Identity::new(1, 1),
+            blocks_id: Identity::new(INITIAL_BLOCKS_COUNT - 1, 1),
+            fds_id: Identity::new(0, 1),
             open_fds_id: Identity::new(0, 0),
         }
     }
