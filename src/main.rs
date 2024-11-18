@@ -81,6 +81,11 @@ enum Commands {
         /// size
         size: usize,
     },
+    /// Change the current working directory to pathname
+    Cd {
+        /// hard link pathname
+        pathname: String,
+    },
     /// Exit the program
     Exit,
 }
@@ -94,7 +99,7 @@ fn main() {
         env!("CARGO_PKG_VERSION")
     );
     loop {
-        match editor.readline("$ ") {
+        match editor.readline(&format!("$ {}> ", vfs.cwd())) {
             Ok(line) => {
                 let input = match split(&line) {
                     Ok(input) => input,
@@ -167,6 +172,11 @@ fn main() {
                         },
                         Commands::Truncate { pathname, size } => {
                             if let Err(err) = vfs.truncate(&pathname, size) {
+                                eprintln!("{}", err);
+                            }
+                        }
+                        Commands::Cd { pathname } => {
+                            if let Err(err) = vfs.cd(&pathname) {
                                 eprintln!("{}", err);
                             }
                         }

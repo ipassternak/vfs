@@ -213,7 +213,7 @@ impl Vfs {
         &self.cwd
     }
 
-    pub fn is_absolute_path(pathname: &str) -> bool {
+    pub fn is_absolute(pathname: &str) -> bool {
         pathname.starts_with(PATHNAME_SEPARATOR)
     }
 
@@ -233,6 +233,29 @@ impl Vfs {
         }
     }
 
+    fn realpath(prefix: &str, pathname: &str) -> String {
+        let mut segments: Vec<_> = if Vfs::is_absolute(pathname) {
+            Vec::new()
+        } else {
+            prefix.split(PATHNAME_SEPARATOR).filter(|seg| seg.len() > 0).collect()
+        };
+        for seg in pathname.split(PATHNAME_SEPARATOR).filter(|seg| seg.len() > 0) {
+            match seg {
+                DOT => {}
+                DOTDOT => {
+                    segments.pop();
+                }
+                _ => segments.push(seg),
+            }
+        }
+        let path = String::from(PATHNAME_SEPARATOR);
+        if segments.is_empty() {
+            path
+        } else {
+            path + &segments.join(&PATHNAME_SEPARATOR.to_string())
+        }
+    }
+
     fn root(&self) -> &FileDescriptor {
         &self.fds[0]
     }
@@ -241,7 +264,7 @@ impl Vfs {
         let pathname = pathname.trim();
         let mut fd = self.root();
         let mut id: usize = 0;
-        if !Vfs::is_absolute_path(pathname) {
+        if !Vfs::is_absolute(pathname) {
             match &self.fds.get(self.cwd_id) {
                 Some(cur) => {
                     fd = cur;
@@ -275,6 +298,26 @@ impl Vfs {
         entries
             .get(name)
             .and_then(|&next_id| self.fds.get(next_id).map(|fd| (fd, next_id, id)))
+    }
+
+    pub fn cd(&mut self, pathname: &str) -> Result<(), String> {
+        match self.resolve(pathname) {
+            Some((fd, id, _)) => {
+                if fd.file_type.is_file() {
+                    return Err(format!(
+                        "cd: not a directory: {}",
+                        pathname
+                    ));
+                }
+                self.cwd_id = id;
+                self.cwd = Vfs::realpath(&self.cwd, pathname);
+                Ok(())
+            }
+            None => Err(format!(
+                "cd: no such file or directory: {}",
+                pathname
+            )),
+        }
     }
 
     pub fn stat(&self, pathname: &str) -> Result<Statx, String> {
