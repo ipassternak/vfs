@@ -220,7 +220,14 @@ impl Vfs {
     pub fn dirname(pathname: &str) -> String {
         let sep_idx = pathname.rfind(PATHNAME_SEPARATOR);
         match sep_idx {
-            Some(idx) => pathname[..idx].to_string(),
+            Some(idx) => {
+                let dirname = pathname[..idx].to_string();
+                return if dirname.is_empty() {
+                    PATHNAME_SEPARATOR.to_string()
+                } else {
+                    dirname
+                }
+            },
             None => pathname.to_string(),
         }
     }
@@ -233,13 +240,19 @@ impl Vfs {
         }
     }
 
-    fn realpath(prefix: &str, pathname: &str) -> String {
+    pub fn join(prefix: &str, pathname: &str) -> String {
         let mut segments: Vec<_> = if Vfs::is_absolute(pathname) {
             Vec::new()
         } else {
-            prefix.split(PATHNAME_SEPARATOR).filter(|seg| seg.len() > 0).collect()
+            prefix
+                .split(PATHNAME_SEPARATOR)
+                .filter(|seg| seg.len() > 0)
+                .collect()
         };
-        for seg in pathname.split(PATHNAME_SEPARATOR).filter(|seg| seg.len() > 0) {
+        for seg in pathname
+            .split(PATHNAME_SEPARATOR)
+            .filter(|seg| seg.len() > 0)
+        {
             match seg {
                 DOT => {}
                 DOTDOT => {
@@ -304,17 +317,46 @@ impl Vfs {
         match self.resolve(pathname) {
             Some((fd, id, _)) => {
                 if fd.file_type.is_file() {
-                    return Err(format!(
-                        "cd: not a directory: {}",
-                        pathname
-                    ));
+                    return Err(format!("cd: not a directory: {}", pathname));
                 }
                 self.cwd_id = id;
-                self.cwd = Vfs::realpath(&self.cwd, pathname);
+                self.cwd = Vfs::join(&self.cwd, pathname);
+                Ok(())
+            }
+            None => Err(format!("cd: no such file or directory: {}", pathname)),
+        }
+    }
+
+    pub fn mkdir(&mut self, pathname: &str) -> Result<(), String> {
+        let basename = Vfs::basename(pathname);
+        if basename.is_empty() {
+            return Err("create: a non-empty name is required".into());
+        }
+        let dirname = if pathname.contains(PATHNAME_SEPARATOR) {
+            &Vfs::dirname(pathname)
+        } else {
+            self.cwd()
+        };
+        match self.resolve(&dirname) {
+            Some((fd, id, _)) => {
+                if fd.file_type.is_file() {
+                    return Err(format!(
+                        "mkdir: cannot create directory '{}': Not a directory",
+                        dirname
+                    ));
+                }
+                let entries = fd.file_type.as_dir();
+                if entries.contains_key(&basename) {
+                    return Err(format!("mkdir: cannot create '{}': File exists", pathname));
+                }
+                let new_id = self.alloc_fd(false, id);
+                let fd = &mut self.fds[id];
+                let entries = fd.file_type.as_dir_mut();
+                entries.insert(basename.to_string(), new_id);
                 Ok(())
             }
             None => Err(format!(
-                "cd: no such file or directory: {}",
+                "mkdir: cannot create directory '{}': No such file or directory",
                 pathname
             )),
         }
@@ -334,7 +376,11 @@ impl Vfs {
         match self.resolve(pathname) {
             Some((fd, _, _)) => match &fd.file_type {
                 FileType::Directory(entries) => {
-                    let mut names: Vec<_> = entries.keys().cloned().collect();
+                    let mut names: Vec<_> = entries
+                        .keys()
+                        .cloned()
+                        .filter(|name| name != DOT && name != DOTDOT)
+                        .collect();
                     names.sort_unstable();
                     Ok(names)
                 }

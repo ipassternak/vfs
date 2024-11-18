@@ -23,7 +23,7 @@ enum Commands {
     #[clap(name = "ls")]
     List {
         /// hard link pathname
-        #[clap(default_value = "/")]
+        #[clap(default_value = ".")]
         pathname: String,
     },
     /// Create a regular file and create a hard link with pathname to it in the directory
@@ -83,6 +83,12 @@ enum Commands {
     },
     /// Change the current working directory to pathname
     Cd {
+        /// hard link pathname
+        #[clap(default_value = "/")]
+        pathname: String,
+    },
+    /// Create a directory and create a hard link with pathname to it in the directory
+    Mkdir {
         /// hard link pathname
         pathname: String,
     },
@@ -177,6 +183,11 @@ fn main() {
                         }
                         Commands::Cd { pathname } => {
                             if let Err(err) = vfs.cd(&pathname) {
+                                eprintln!("{}", err);
+                            }
+                        }
+                        Commands::Mkdir { pathname } => {
+                            if let Err(err) = vfs.mkdir(&pathname) {
                                 eprintln!("{}", err);
                             }
                         }
