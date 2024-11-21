@@ -227,6 +227,7 @@ pub struct Vfs {
     fds_id: Identity,
     open_fds_id: Identity,
     cwd_id: usize,
+    cwd: String,
 }
 
 impl Vfs {
@@ -239,6 +240,7 @@ impl Vfs {
             fds_id: Identity::new(0, 1),
             open_fds_id: Identity::new(0, 0),
             cwd_id: 0,
+            cwd: PATHNAME_SEPARATOR.to_string(),
         }
     }
 
@@ -268,13 +270,15 @@ impl Vfs {
         }
     }
 
-    fn segmentize(pathname: &str) -> Vec<&str> {
+    fn segmentize(pathname: &str, reverse: bool) -> Vec<&str> {
         let mut segments: Vec<_> = pathname
             .trim_matches(TRAILING_SEPARATOR)
             .split(PATHNAME_SEPARATOR)
             .filter(|&seg| !seg.is_empty())
             .collect();
-        segments.reverse();
+        if reverse {
+            segments.reverse();
+        }
         segments
     }
 
@@ -288,7 +292,7 @@ impl Vfs {
         } else {
             &self.fds[self.cwd_id]
         };
-        let mut segments: Vec<_> = Vfs::segmentize(pathname);
+        let mut segments = Vfs::segmentize(pathname, true);
         let mut symlink_resolve_count = 0;
         loop {
             let entries = fd.file_type.as_dir();
@@ -316,7 +320,7 @@ impl Vfs {
                                     return None;
                                 }
                                 symlink_resolve_count += 1;
-                                segments.extend(Vfs::segmentize(path));
+                                segments.extend(Vfs::segmentize(path, true));
                                 if Vfs::is_absolute(&path) {
                                     fd = self.root();
                                 }
@@ -328,6 +332,59 @@ impl Vfs {
                 None => return None,
             }
         }
+    }
+
+    pub fn realpath(&self, pathname: &str) -> Option<String> {
+        let (mut realpath, mut fd) = if Vfs::is_absolute(pathname) {
+            (Vec::new(), self.root())
+        } else {
+            (Vfs::segmentize(&self.cwd, false), &self.fds[self.cwd_id])
+        };
+        let mut segments = Vfs::segmentize(pathname, true);
+        let mut symlink_resolve_count = 0;
+        while let Some(seg) = segments.pop() {
+            let entries = fd.file_type.as_dir();
+            match seg {
+                DOT => {}
+                DOTDOT => {
+                    realpath.pop();
+                    fd = &self.fds[entries[DOTDOT]];
+                }
+                _ => match entries.get(seg).and_then(|&next_id| self.fds.get(next_id)) {
+                    Some(next_fd) => match &next_fd.file_type {
+                        FileType::Directory(_) => {
+                            realpath.push(seg);
+                            fd = next_fd;
+                        }
+                        FileType::Regular(_) => {
+                            if segments.is_empty() {
+                                realpath.push(seg);
+                            } else {
+                                return None;
+                            }
+                        }
+                        FileType::Symlink(path) => {
+                            if symlink_resolve_count >= SYMLINK_RESOLVE_LIMIT {
+                                return None;
+                            }
+                            symlink_resolve_count += 1;
+                            let symlink_segments = Vfs::segmentize(path, true);
+                            if Vfs::is_absolute(&path) {
+                                realpath.clear();
+                                fd = self.root();
+                            }
+                            segments.extend(symlink_segments);
+                        }
+                    },
+                    None => return None,
+                },
+            }
+        }
+        Some(format!("{}{}", PATHNAME_SEPARATOR, realpath.join(PATHNAME_SEPARATOR)))
+    }
+
+    pub fn cwd(&self) -> &str {
+        &self.cwd
     }
 
     pub fn symlink(&mut self, path: &str, pathname: &str) -> Result<(), String> {
@@ -362,11 +419,13 @@ impl Vfs {
     }
 
     pub fn cd(&mut self, pathname: &str) -> Result<(), String> {
-        match self.resolve(&format!("{}/{}", pathname, DOT)) {
+        let dirname = &format!("{}/{}", pathname, DOT);
+        match self.resolve(dirname) {
             Some((fd, id, _)) => {
                 if !fd.file_type.is_dir() {
                     return Err(format!("cd: not a directory: {}", pathname));
                 }
+                self.cwd = self.realpath(dirname).unwrap();
                 self.cwd_id = id;
                 Ok(())
             }
@@ -377,7 +436,7 @@ impl Vfs {
     pub fn mkdir(&mut self, pathname: &str) -> Result<(), String> {
         let pathname = pathname.trim_end_matches(TRAILING_SEPARATOR);
         let basename = Vfs::basename(&pathname);
-        let dirname = Vfs::dirname(&pathname);
+        let dirname = format!("{}/{}", Vfs::dirname(&pathname), DOT);
         match self.resolve(&dirname) {
             Some((fd, parent_id, _)) => {
                 if !fd.file_type.is_dir() {
@@ -491,7 +550,7 @@ impl Vfs {
 
     pub fn create(&mut self, pathname: &str) -> Result<(), String> {
         let basename = Vfs::basename(&pathname);
-        let dirname = Vfs::dirname(&pathname);
+        let dirname = format!("{}/{}", Vfs::dirname(&pathname), DOT);
         match self.resolve(&dirname) {
             Some((fd, id, _)) => {
                 if !fd.file_type.is_dir() {

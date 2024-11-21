@@ -117,7 +117,7 @@ fn main() {
         env!("CARGO_PKG_VERSION")
     );
     loop {
-        match editor.readline("$ ") {
+        match editor.readline(&format!("$ {}> ", vfs.cwd())) {
             Ok(line) => {
                 let input = match split(&line) {
                     Ok(input) => input,
