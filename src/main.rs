@@ -97,6 +97,13 @@ enum Commands {
         /// hard link pathname
         pathname: String,
     },
+    /// Create a symbolic link with pathname pointed to the path
+    Symlink {
+        /// symlink path
+        path: String,
+        /// hard link pathname
+        pathname: String,
+    },
     /// Exit the program
     Exit,
 }
@@ -110,7 +117,7 @@ fn main() {
         env!("CARGO_PKG_VERSION")
     );
     loop {
-        match editor.readline(&format!("$ {}> ", vfs.cwd())) {
+        match editor.readline("$ ") {
             Ok(line) => {
                 let input = match split(&line) {
                     Ok(input) => input,
@@ -198,6 +205,11 @@ fn main() {
                         }
                         Commands::Rmdir { pathname } => {
                             if let Err(err) = vfs.rmdir(&pathname) {
+                                eprintln!("{}", err);
+                            }
+                        }
+                        Commands::Symlink { path, pathname } => {
+                            if let Err(err) = vfs.symlink(&path, &pathname) {
                                 eprintln!("{}", err);
                             }
                         }
