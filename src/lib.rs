@@ -496,6 +496,7 @@ impl Vfs {
                 self.free_fd(id);
                 if id == self.cwd_id {
                     self.cwd_id = 0;
+                    self.cwd = PATHNAME_SEPARATOR.to_string();
                 }
                 Ok(())
             }
